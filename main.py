@@ -16,6 +16,7 @@ from grammar import grammar as G
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import optim
 
 
@@ -215,6 +216,11 @@ def evaluate(
     return score
 
 
+def selection_similarity(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
+    t = (v1 @ v2.transpose(0, 1)) / (v1.norm(2).sqrt() * v2.norm(2).sqrt())
+    return t.mean()
+
+
 def train(
     sampler: NN.NeuralSampler,
     steps: int,
@@ -237,6 +243,7 @@ def train(
 
         scores = []
         histories = []
+        sequence = []
         while len(scores) < 3:
             try:
                 ctx = Gen.Context(grammar=grammar)
@@ -247,6 +254,7 @@ def train(
                     inputs, outputs = generate_pairs(datagen, func_exe, function, 30)
                     scores.append(metric.score(function, inputs, outputs))
                     histories.append(torch.cat(sampler.model.scores))
+                    sequence.append(sampler.model.previous_selection)
             except Gen.TooMuchNesting:
                 pass
             except Exception as e:
@@ -256,18 +264,22 @@ def train(
 
             sampler.reset_state()
 
-        best_idx = np.argmax(scores).item()
-        worst_idx = np.argmin(scores).item()
+        worst_idx, second_idx, best_idx = np.argsort(scores)
+        # worst_idx = np.argmin(scores).item()
         num = histories[worst_idx].mean()
-        den = histories[best_idx].mean()
-        loss = num / den
+        den = histories[best_idx].mean() + histories[second_idx].mean()
+        loss_1 = num / den
+        loss_2 = selection_similarity(sequence[best_idx], sequence[second_idx]) * 50
+        loss = loss_1 + loss_2
 
         opt.zero_grad()
-        loss.backward()
+        loss.backward(retain_graph=True)
         opt.step()
 
         best_ma = scores[best_idx] if best_ma < 0 else (best_ma + scores[best_idx]) / 2
-        print(f"step: {step}, loss = {loss.item():.4g}, best_score: {best_ma:.4g},")
+        print(
+            f"step: {step}, loss = {loss.item():.4g}, {loss_1.item():.4g}, {loss_2.item():.4g}; best_score: {best_ma:.4g},"
+        )
 
     torch.save(sampler.model, f"{MODEL_DIR_NAME}/m_{prefix}_{batch_no}.pt")
     sampler.model.eval()
@@ -280,11 +292,11 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--neural", action="store_true", default=False)
     parser.add_argument("-t", "--train", type=int, default=0)
     parser.add_argument("-p", "--path", type=str, default="")
-    parser.add_argument("-f", "--num-functions", type=int, default=1000)
+    parser.add_argument("-f", "--num-functions", type=int, default=200)
     parser.add_argument("-i", "--io-reps", type=int, default=30)
-    parser.add_argument("--dh", type=int, default=256, help="Hidden dimension")
+    parser.add_argument("--dh", type=int, default=512, help="Hidden dimension")
     parser.add_argument("--de", type=int, default=256, help="Embedding dimension")
-    parser.add_argument("--dm", type=int, default=256, help="Matching dimension")
+    parser.add_argument("--dm", type=int, default=480, help="Matching dimension")
 
     args = parser.parse_args()
     print(

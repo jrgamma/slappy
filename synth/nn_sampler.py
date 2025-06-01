@@ -11,7 +11,13 @@ from synth.generator import Sampler, SamplingTypes
 
 
 SamplingDataTypes = TypeVar(
-    "SamplingDataTypes", str, P.DataType, ArgTypeSources, P.Arg, P.AssgnStmt, P.ConstantDataType
+    "SamplingDataTypes",
+    str,
+    P.DataType,
+    ArgTypeSources,
+    P.Arg,
+    P.AssgnStmt,
+    P.ConstantDataType,
 )
 
 
@@ -55,7 +61,9 @@ class DataEmbedding[_T](nn.Module):
                 continue
             idx = len(self._data_idx_map)
             if idx >= self._vocab_size:
-                raise ValueError(f"{self.__class__.__name__}>> Exceeded vocab size, item: {item}")
+                raise ValueError(
+                    f"{self.__class__.__name__}>> Exceeded vocab size, item: {item}"
+                )
             self._data_idx_map[key] = idx
 
     def forward(self, data: Iterable[_T | None]) -> torch.Tensor:
@@ -83,7 +91,11 @@ class ConstantEmbedding(DataEmbedding[P.ConstantDataType]):
 class ImportedFunctionEmbedding(nn.Module):
 
     def __init__(
-        self, embed_dim: int, max_classes: int, max_functions: int, class_fraction: float = 0.25
+        self,
+        embed_dim: int,
+        max_classes: int,
+        max_functions: int,
+        class_fraction: float = 0.25,
     ) -> None:
         super().__init__()
         self._class_dim = int(class_fraction * embed_dim)
@@ -91,7 +103,9 @@ class ImportedFunctionEmbedding(nn.Module):
         self.class_embedding = StrDataEmbedding(self._class_dim, max_classes)
         self.function_embedding = StrDataEmbedding(self._function_dim, max_functions)
 
-    def _split_data(self, lst: Iterable[str]) -> tuple[list[str | None], list[str | None]]:
+    def _split_data(
+        self, lst: Iterable[str]
+    ) -> tuple[list[str | None], list[str | None]]:
         list_class: list[str | None] = []
         list_funcs: list[str | None] = []
         for item in lst:
@@ -173,7 +187,10 @@ class StatementEmbedding(nn.Module):
         stmts = torch.stack(
             [
                 self.dt_embed(
-                    [arg.dtype if isinstance(arg, P.AssgnStmt) else None for arg in item.rhs.args]
+                    [
+                        arg.dtype if isinstance(arg, P.AssgnStmt) else None
+                        for arg in item.rhs.args
+                    ]
                 ).sum(0)
                 for item in data
             ],
@@ -182,7 +199,10 @@ class StatementEmbedding(nn.Module):
         consts = torch.stack(
             [
                 self.const_embed(
-                    [arg.value if isinstance(arg, P.Constant) else None for arg in item.rhs.args]
+                    [
+                        arg.value if isinstance(arg, P.Constant) else None
+                        for arg in item.rhs.args
+                    ]
                 ).sum(0)
                 for item in data
             ],
@@ -191,7 +211,10 @@ class StatementEmbedding(nn.Module):
         funcs = torch.stack(
             [
                 self.func_embed(
-                    [arg.name if isinstance(arg, P._Function) else None for arg in item.rhs.args]
+                    [
+                        arg.name if isinstance(arg, P._Function) else None
+                        for arg in item.rhs.args
+                    ]
                 ).sum(0)
                 for item in data
             ],
@@ -202,9 +225,9 @@ class StatementEmbedding(nn.Module):
 
     def forward(self, data: Iterable[P.AssgnStmt]) -> torch.Tensor:
         rtypes, argss = self.flatten_items(data)
-        return (self.dt_embed(rtypes) * self._rtype_weight + argss * self._args_weight) / (
-            self._rtype_weight + self._args_weight
-        )
+        return (
+            self.dt_embed(rtypes) * self._rtype_weight + argss * self._args_weight
+        ) / (self._rtype_weight + self._args_weight)
 
 
 class SamplingModel(nn.Module):
@@ -221,11 +244,13 @@ class SamplingModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.embed_dim = embed_dim
         self.embeddings = nn.ModuleDict(embeddings)
-        self.grus = nn.ModuleDict({t.name: nn.GRU(embed_dim, hidden_dim) for t in SamplingTypes})
+        self.gru = nn.GRU(embed_dim, hidden_dim, dropout=0.25)
         self.linear_gru = nn.Linear(hidden_dim, match_dim, bias=False)
         self.linear_embed = nn.Linear(embed_dim, match_dim, bias=False)
         self.register_buffer("hidden_state", self._scale * torch.randn((1, hidden_dim)))
-        self.register_buffer("previous_selection", self._scale * torch.zeros(1, embed_dim))
+        self.register_buffer(
+            "previous_selection", self._scale * torch.zeros(1, embed_dim)
+        )
         self.scores: list[torch.Tensor] = []
 
     def reset_state(self, seed: int):
@@ -234,9 +259,11 @@ class SamplingModel(nn.Module):
         self.previous_selection = self._scale * torch.zeros((1, self.embed_dim))
         self.scores.clear()
 
-    def forward(self, choices: list[SamplingDataTypes], stype: SamplingTypes) -> SamplingDataTypes:
+    def forward(
+        self, choices: list[SamplingDataTypes], stype: SamplingTypes
+    ) -> SamplingDataTypes:
         embeds = self.embeddings[stype.name](choices)
-        _, gru_out = self.grus[stype.name](self.previous_selection, self.hidden_state)
+        _, gru_out = self.gru(self.previous_selection, self.hidden_state)
 
         # compute score
         queries = self.linear_embed(embeds)
@@ -245,7 +272,9 @@ class SamplingModel(nn.Module):
         index = torch.argmax(scores, dim=-1).detach().item()
 
         # update
-        self.previous_selection = embeds[index : (index + 1)]
+        self.previous_selection = torch.cat(
+            (self.previous_selection, embeds[index : (index + 1)]), dim=0
+        )
         self.hidden_state = gru_out
         self.scores.append(scores[..., int(index)])
 
@@ -267,7 +296,10 @@ class NeuralSampler(Sampler):
         constant_embedding = ConstantEmbedding(embed_dim, 100)
         arg_apply_embedding = ArgEmbedding(data_type_embedding, constant_embedding)
         statements_embedding = StatementEmbedding(
-            data_type_embedding, arg_apply_embedding, constant_embedding, function_embedding
+            data_type_embedding,
+            arg_apply_embedding,
+            constant_embedding,
+            function_embedding,
         )
         embeddings = {
             SamplingTypes.io_data_types.name: data_type_embedding,
@@ -279,7 +311,9 @@ class NeuralSampler(Sampler):
         }
         self.model = SamplingModel(hidden_dim, embed_dim, match_dim, embeddings)
 
-    def sample(self, choices: list[SamplingDataTypes], stype: SamplingTypes) -> SamplingDataTypes:
+    def sample(
+        self, choices: list[SamplingDataTypes], stype: SamplingTypes
+    ) -> SamplingDataTypes:
         out = self.model(choices, stype)
         # print(f"  nn sampled output = {out}")
         return out
